@@ -1,3 +1,5 @@
+import { cachedFetch } from '../utils/asyncPatterns';
+
 /**
  * TODO: Implement a service that coordinates multiple API calls
  *
@@ -8,40 +10,41 @@
  * 4. Use caching to optimize performance
  */
 
-export async function fetchDashboardData(city) {
-  // TODO: Replace sequential fetching with parallel fetching
-  // using Promise.allSettled
+export async function fetchDashboardData(city, onSettled) {
+  const names = ['weather', 'forecast', 'news', 'alerts'];
 
-  const dashboardData = {};
+  // Start all four requests at once; allSettled waits for every one, failed or not
+  const results = await Promise.allSettled(
+    names.map(name => {
+      const promise = cachedFetch(
+        `http://localhost:3001/${name}?city=${encodeURIComponent(city)}`,
+        { timeout: 3000 }
+      );
 
-  // Current implementation: Sequential (slow!)
-  try {
-    const weatherResponse = await fetch(`http://localhost:3001/weather?city=${city}`);
-    dashboardData.weather = await weatherResponse.json();
-  } catch (error) {
-    dashboardData.weather = { error: true };
-  }
+      // Tier 1: report each card as soon as its own request settles
+      if (onSettled) {
+        promise
+          .then(data => onSettled(name, data, null))
+          .catch(error => onSettled(name, null, error.message));
+      }
 
-  try {
-    const forecastResponse = await fetch(`http://localhost:3001/forecast?city=${city}`);
-    dashboardData.forecast = await forecastResponse.json();
-  } catch (error) {
-    dashboardData.forecast = { error: true };
-  }
+      return promise;
+    })
+  );
 
-  try {
-    const newsResponse = await fetch(`http://localhost:3001/news?city=${city}`);
-    dashboardData.news = await newsResponse.json();
-  } catch (error) {
-    dashboardData.news = { error: true };
-  }
+  const data = {};
+  const errors = {};
 
-  try {
-    const alertsResponse = await fetch(`http://localhost:3001/alerts?city=${city}`);
-    dashboardData.alerts = await alertsResponse.json();
-  } catch (error) {
-    dashboardData.alerts = { error: true };
-  }
+  results.forEach((result, index) => {
+    const name = names[index];
 
-  return dashboardData;
+    if (result.status === 'fulfilled') {
+      data[name] = result.value;
+      errors[name] = null;
+    } else {
+      errors[name] = result.reason.message;
+    }
+  });
+
+  return { data, errors };
 }

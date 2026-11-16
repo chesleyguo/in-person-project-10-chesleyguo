@@ -5,15 +5,9 @@ import NewsCard from './components/NewsCard';
 import AlertsCard from './components/AlertsCard';
 import SearchBar from './components/SearchBar';
 import StatusBar from './components/StatusBar';
-
-// PROBLEM: This basic fetch has no retry, no caching, no error handling
-async function basicFetch(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error('Network response was not ok');
-  }
-  return response.json();
-}
+import { fetchDashboardData } from './services/dashboardService';
+import { usePolling } from './hooks/usePolling';
+import { getFastestSource, fetchWithRetry } from './utils/asyncPatterns';
 
 function App() {
   const [city, setCity] = useState('San Francisco');
@@ -36,64 +30,40 @@ function App() {
     alerts: null
   });
 
-  // PROBLEM: No error handling, no retry, no caching
-  const fetchWeatherData = async (cityName) => {
-    setLoading(prev => ({ ...prev, weather: true }));
-    setErrors(prev => ({ ...prev, weather: null }));
-
-    try {
-      const data = await basicFetch(`http://localhost:3001/weather?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, weather: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, weather: error.message }));
-      console.error('Weather fetch failed:', error);
-    } finally {
-      setLoading(prev => ({ ...prev, weather: false }));
-    }
-  };
-
-  // PROBLEM: All requests are sequential, not parallel
   const fetchAllData = async (cityName) => {
-    // Fetch weather
-    await fetchWeatherData(cityName);
+    setLoading({ weather: true, forecast: true, news: true, alerts: true });
 
-    // Fetch forecast
-    setLoading(prev => ({ ...prev, forecast: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/forecast?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, forecast: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, forecast: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, forecast: false }));
-    }
-
-    // Fetch news
-    setLoading(prev => ({ ...prev, news: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/news?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, news: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, news: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, news: false }));
-    }
-
-    // Fetch alerts
-    setLoading(prev => ({ ...prev, alerts: true }));
-    try {
-      const data = await basicFetch(`http://localhost:3001/alerts?city=${cityName}`);
-      setDashboardData(prev => ({ ...prev, alerts: data }));
-    } catch (error) {
-      setErrors(prev => ({ ...prev, alerts: error.message }));
-    } finally {
-      setLoading(prev => ({ ...prev, alerts: false }));
-    }
+    // Tier 1: each card fills (or turns red) as soon as its own request settles
+    await fetchDashboardData(cityName, (name, data, errorMessage) => {
+      if (data) {
+        setDashboardData(prev => ({ ...prev, [name]: data }));
+      }
+      setErrors(prev => ({ ...prev, [name]: errorMessage }));
+      setLoading(prev => ({ ...prev, [name]: false }));
+    });
   };
+
+  // Tier 2: the fastest of three weather sources
+  useEffect(() => {
+    const urls = [1, 2, 3].map(
+      n => `http://localhost:3001/weather-source${n}?city=${encodeURIComponent(city)}`
+    );
+    getFastestSource(urls)
+      .then(result => console.log('Fastest source:', result.source))
+      .catch(error => console.error('All sources failed:', error));
+  }, []);
+
+  // Tier 3: a 404 fails at once, with no retry
+  useEffect(() => {
+    fetchWithRetry('http://localhost:3001/nope')
+      .catch(error => console.log('Tier 3 /nope failed without retry:', error.message));
+  }, []);
 
   useEffect(() => {
     fetchAllData(city);
   }, [city]);
+
+  usePolling(() => fetchAllData(city), 30000);
 
   const handleRefresh = () => {
     fetchAllData(city);
